@@ -22,4 +22,4 @@ There is no authentication, besides allowing for specific names to be routed to.
 Examples
 --------
 
-Refer to [examples file](EXAMPLES.md).
+Refer to the [examples file](EXAMPLES.md).
