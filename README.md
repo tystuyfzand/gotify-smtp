@@ -18,3 +18,8 @@ Limitations
 Currently, HTML messages aren't supported. Markdown might be possible, but currently not planned as most if not all messages include a text/plain variation.
 
 There is no authentication, besides allowing for specific names to be routed to. As such you should NOT run this as a public accessible SMTP server, and firewall it to what you need/put it behind a VPN. If Gotify supports authentication in the future, I'll add it and use the token to validate logins.
+
+Examples
+--------
+
+Refer to the [examples file](EXAMPLES.md).
