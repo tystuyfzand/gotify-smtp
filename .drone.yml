@@ -1,0 +1,56 @@
+kind: pipeline
+type: docker
+name: default
+
+steps:
+  - name: build
+    image: docker:dind
+    volumes:
+      - name: dockersock
+        path: /var/run
+      - name: build
+        path: /build
+    commands:
+      - echo "Building gotify version $GOTIFY_VERSION"
+      - sleep 5 # give docker enough time to start
+      - docker ps -a
+      - apk --no-cache add build-base git go
+      - export PATH=$PATH:$HOME/go/bin
+      - make -e build
+      - ls build
+      - cp build/*.so /build
+  - name: publish
+    image: tystuyfzand/drone-github-release
+    volumes:
+      - name: build
+        path: /build
+    settings:
+      api_key:
+        from_secret: github_api_key
+      files:
+        - /build/*.so
+      title: "SMTP for Gotify ${GOTIFY_VERSION}"
+      tag_name: "latest-gotify-${GOTIFY_VERSION}"
+      checksum:
+        - md5
+        - sha1
+        - sha256
+        - sha512
+
+services:
+  - name: docker
+    image: docker:dind
+    privileged: true
+    volumes:
+      - name: dockersock
+        path: /var/run
+
+volumes:
+  - name: dockersock
+    temp: {}
+  - name: build
+    temp: {}
+
+trigger:
+  event:
+    - custom
