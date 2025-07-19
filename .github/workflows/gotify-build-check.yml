@@ -57,19 +57,19 @@ jobs:
       - name: Build Gotify Plugin
         if: steps.check_release.outputs.skip_build == 'false'
         run: |
-          git clone https://github.com/${{ env.GOTIFY_REPO }} gotify
-          cd gotify
-          git checkout ${{ steps.get_version.outputs.version }}
-
           export GOTIFY_VERSION="${{ steps.get_version.outputs.version }}"
-          make -e build
-          mkdir -p ../build
-          cp build/*.so ../build/
+          export GOMODCACHE=$(pwd)/.gomodcache
+          export GOPATH=$(pwd)/.gopath
 
-      - name: Compute checksums
+          make -e build
+
+          mkdir -p build-output
+          cp build/*.so build-output/
+
+      - name: Compute Checksums
         if: steps.check_release.outputs.skip_build == 'false'
         run: |
-          cd build
+          cd build-output
           for f in *.so; do
             md5sum "$f" > "$f.md5"
             sha1sum "$f" > "$f.sha1"
@@ -83,10 +83,10 @@ jobs:
         with:
           tag_name: latest-gotify-${{ steps.get_version.outputs.version }}
           name: "SMTP for Gotify ${{ steps.get_version.outputs.version }}"
-          body: "Automated release for Gotify plugin."
+          body: "Automated plugin release for Gotify version ${{ steps.get_version.outputs.version }}."
           files: |
-            build/*.so
-            build/*.md5
-            build/*.sha*
+            build-output/*.so
+            build-output/*.md5
+            build-output/*.sha*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
