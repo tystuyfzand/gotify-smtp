@@ -60,6 +60,7 @@ jobs:
           export GOTIFY_VERSION="${{ steps.get_version.outputs.version }}"
           export GOMODCACHE=$(pwd)/.gomodcache
           export GOPATH=$(pwd)/.gopath
+          export PATH=$PATH:$GOPATH/bin
 
           make -e build
 
