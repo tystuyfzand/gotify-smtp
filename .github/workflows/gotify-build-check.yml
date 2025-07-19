@@ -26,9 +26,11 @@ jobs:
         id: get_version
         run: |
           RSS_URL="https://github.com/${{ env.GOTIFY_REPO }}/releases.atom"
-          LATEST_TAG=$(curl -s "$RSS_URL" | xmlstarlet sel -t -m "//entry[1]/link[@rel='alternate']" -v "@href" | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+')
-          echo "Latest tag: $LATEST_TAG"
-          echo "version=${LATEST_TAG}" >> $GITHUB_OUTPUT
+          LATEST_URL=$(curl -s "$RSS_URL" | xmlstarlet sel -N a="http://www.w3.org/2005/Atom" \
+            -t -m "/a:feed/a:entry[1]/a:link[@rel='alternate']" -v "@href" -n)
+          echo "Latest release URL: $LATEST_URL"
+          LATEST_TAG=$(echo "$LATEST_URL" | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+')
+          echo "version=$LATEST_TAG" >> $GITHUB_OUTPUT
 
       - name: Check if release already exists
         id: check_release
