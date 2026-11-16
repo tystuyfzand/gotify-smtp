@@ -2,26 +2,32 @@ package main
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/base64"
-	"errors"
 	"fmt"
-	"github.com/emersion/go-smtp"
-	"github.com/gotify/plugin-api"
 	"io"
-	"io/ioutil"
+	"maps"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net/mail"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/emersion/go-sasl"
+	"github.com/emersion/go-smtp"
+	"github.com/gotify/plugin-api"
+	"github.com/microcosm-cc/bluemonday"
 )
 
 var (
 	s        *smtp.Server
 	users    = make(map[string]*Plugin)
 	userLock = &sync.RWMutex{}
+
+	policy = bluemonday.StrictPolicy()
 )
 
 // GetGotifyPluginInfo returns gotify plugin info
@@ -30,7 +36,7 @@ func GetGotifyPluginInfo() plugin.Info {
 		Name:       "SMTP",
 		ModulePath: "github.com/tystuyfzand/gotify-smtp",
 		Author:     "Tyler Stuyfzand",
-		Website:    "https://meow.tf",
+		Website:    "https://tystuyfzand.com",
 	}
 }
 
@@ -53,6 +59,7 @@ func startServer() {
 // Plugin is plugin instance
 type Plugin struct {
 	userCtx    plugin.UserContext
+	config     *Config
 	msgHandler plugin.MessageHandler
 }
 
@@ -84,72 +91,155 @@ func NewGotifyPluginInstance(ctx plugin.UserContext) plugin.Plugin {
 		startServer()
 	}
 
-	return &Plugin{userCtx: ctx}
+	p := &Plugin{userCtx: ctx}
+
+	p.config = p.DefaultConfig().(*Config)
+
+	return p
 }
 
 // The Backend implements SMTP server methods.
 type Backend struct {
 }
 
-// Login handles a login command with username and password.
-func (bkd *Backend) Login(state *smtp.ConnectionState, username, password string) (smtp.Session, error) {
-	userLock.RLock()
-	defer userLock.RUnlock()
-
-	if instance, ok := users[username]; ok {
-		return &Session{instance}, nil
-	}
-
-	return nil, errors.New("user not found")
-}
-
-// AnonymousLogin requires clients to authenticate using SMTP AUTH before sending emails
-func (bkd *Backend) AnonymousLogin(state *smtp.ConnectionState) (smtp.Session, error) {
-	return nil, smtp.ErrAuthRequired
+func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
+	return &Session{}, nil
 }
 
 type Session struct {
-	c *Plugin
+	c    *Plugin
+	auth bool
 }
 
-func (s *Session) Mail(from string, opts smtp.MailOptions) error {
+func (s *Session) AuthMechanisms() []string {
+	return []string{sasl.Plain}
+}
+
+func (s *Session) Auth(mech string) (sasl.Server, error) {
+	return sasl.NewPlainServer(func(identity, username, password string) error {
+		userLock.RLock()
+		defer userLock.RUnlock()
+
+		if instance, ok := users[username]; ok {
+
+			if instance.config.Password != "" {
+				if subtle.ConstantTimeCompare([]byte(password), []byte(instance.config.Password)) != 1 {
+					return smtp.ErrAuthFailed
+				}
+			}
+
+			s.c = instance
+			return nil
+		}
+		return nil
+	}), nil
+}
+
+func (s *Session) Mail(from string, opts *smtp.MailOptions) error {
+	if s.c == nil {
+		return smtp.ErrAuthRequired
+	}
+
+	if len(s.c.config.AllowedSenders) > 0 {
+		// Validate senders based on allow list
+		for _, sender := range s.c.config.AllowedSenders {
+			if sender[0] == '@' {
+				if strings.HasSuffix(from, sender) {
+					return nil
+				}
+			}
+
+			if sender == from {
+				return nil
+			}
+		}
+	}
+
 	return nil
 }
 
-func (s *Session) Rcpt(to string) error {
+func (s *Session) Rcpt(to string, opts *smtp.RcptOptions) error {
+	if s.c == nil {
+		return smtp.ErrAuthRequired
+	}
+
 	return nil
 }
 
 func (s *Session) Data(r io.Reader) error {
-	if m, err := mail.ReadMessage(r); err != nil {
-		return err
-	} else {
-		var subject string
+	if s.c == nil {
+		return smtp.ErrAuthRequired
+	}
 
-		if subjectHeader, ok := m.Header["Subject"]; ok && len(subjectHeader) > 0 {
-			subject = subjectHeader[0]
+	m, err := mail.ReadMessage(r)
+
+	if err != nil {
+		return err
+	}
+
+	var subject string
+
+	if subjectHeader, ok := m.Header["Subject"]; ok && len(subjectHeader) > 0 {
+		subject = subjectHeader[0]
+	}
+
+	if subject == "" {
+		subject = s.c.config.DefaultTitle
+	}
+
+	mediaType, params, err := mime.ParseMediaType(m.Header.Get("Content-Type"))
+
+	var message string
+
+	if err == nil && strings.HasPrefix(mediaType, "multipart/") {
+		availableTypes, err := ParsePart(m.Body, params["boundary"])
+
+		if err != nil {
+			return err
 		}
 
-		mediaType, params, err := mime.ParseMediaType(m.Header.Get("Content-Type"))
-
-		var message string
-
-		if err == nil && strings.HasPrefix(mediaType, "multipart/") {
-			message = ParsePart(m.Body, params["boundary"])
+		if text, ok := availableTypes["text/plain"]; ok {
+			message = text
+		} else if html, ok := availableTypes["text/html"]; ok {
+			message = policy.Sanitize(html)
 		} else {
-			b, err := ioutil.ReadAll(m.Body)
+			keys := slices.Collect(maps.Keys(availableTypes))
 
-			if err != nil {
-				return err
+			message = "<unknown body type, available types: " + strings.Join(keys, ", ") + ">"
+		}
+	} else {
+		b, err := io.ReadAll(m.Body)
+
+		if err != nil {
+			return err
+		}
+
+		if idx := strings.Index(mediaType, ";"); idx != -1 {
+			mediaType = mediaType[:idx]
+		}
+
+		message = string(b)
+
+		if mediaType == "text/html" {
+			message = policy.Sanitize(message)
+		}
+
+		if s.c.config.PrependSender {
+			sender := m.Header.Get("From")
+
+			if sender != "" {
+				message = fmt.Sprintf("From: %s\n\n%s", sender, message)
 			}
-
-			message = string(b)
 		}
 
 		if s.c != nil && s.c.msgHandler != nil {
-			s.c.msgHandler.SendMessage(plugin.Message{
-				Title:   subject,
-				Message: message,
+			return s.c.msgHandler.SendMessage(plugin.Message{
+				Title:    subject,
+				Message:  message,
+				Priority: s.c.config.Priority,
+				Extras: map[string]interface{}{
+					"smtp::sender": m.Header.Get("From"),
+				},
 			})
 		}
 	}
@@ -165,15 +255,12 @@ func (s *Session) Logout() error {
 	return nil
 }
 
-
 // ParsePart will find the first text/plain part from a multipart body.
 // Adapted from https://github.com/kirabou/parseMIMEemail.go
-func ParsePart(body io.Reader, boundary string) string {
+func ParsePart(body io.Reader, boundary string) (map[string]string, error) {
 	reader := multipart.NewReader(body, boundary)
 
-	if reader == nil {
-		return ""
-	}
+	ret := make(map[string]string)
 
 	// Go through each of the MIME part of the message Body with NextPart(),
 	for {
@@ -184,49 +271,57 @@ func ParsePart(body io.Reader, boundary string) string {
 		}
 
 		if err != nil {
-			fmt.Println("Error going through the MIME parts -", err)
-			break
+			return nil, err
 		}
 
 		mediaType, params, err := mime.ParseMediaType(part.Header.Get("Content-Type"))
 
 		if err == nil && strings.HasPrefix(mediaType, "multipart/") {
 			// This is a new multipart to be handled recursively
-			str := ParsePart(part, params["boundary"])
+			parts, err := ParsePart(part, params["boundary"])
 
-			if str != "" {
-				return str
+			if err != nil {
+				return nil, err
+			}
+
+			for key, part := range parts {
+				ret[key] = part
 			}
 		} else {
-			if strings.HasPrefix(mediaType, "text/plain") {
-				b, err := ioutil.ReadAll(part)
+			b, err := io.ReadAll(part)
 
-				if err != nil {
-					continue
-				}
-
-				encoding := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
-
-				switch {
-				case strings.Compare(encoding, "base64") == 0:
-					b, err = base64.StdEncoding.DecodeString(string(b))
-					if err != nil {
-						continue
-					}
-
-				case strings.Compare(encoding, "quoted-printable") == 0:
-					b, err = ioutil.ReadAll(quotedprintable.NewReader(bytes.NewReader(b)))
-					if err != nil {
-						continue
-					}
-				}
-
-				return string(b)
+			if err != nil {
+				continue
 			}
+
+			encoding := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
+
+			b, err = decodeMessageEncoding(encoding, b)
+
+			if err != nil {
+				// Tried to decide what to do in this situation, best to just discard it?
+				continue
+			}
+
+			ret[mediaType] = string(b)
 		}
 	}
 
-	return ""
+	return ret, nil
+}
+
+func decodeMessageEncoding(encoding string, b []byte) ([]byte, error) {
+	switch encoding {
+	case "base64":
+		return base64.StdEncoding.DecodeString(string(b))
+
+	case "quoted-printable":
+		r := quotedprintable.NewReader(bytes.NewReader(b))
+
+		return io.ReadAll(r)
+	}
+
+	return b, nil
 }
 
 func main() {

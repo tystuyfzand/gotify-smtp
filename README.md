@@ -12,12 +12,27 @@ Download the plugin from the releases page, or build it from source (using the M
 
 Point your application settings at GOTIFY_IP port 1025, with the username being the name of the account you'd like to send messages to.
 
+Configuration
+-------------
+
+Users configure their own settings per-account in the Gotify UI.
+
+| Option | Default | Description                                                                                                                               |
+|--------|---------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| `password` | empty | Authentication password for SMTP. Only "PLAIN" auth supported.                                                                            |
+| `priority` | 0 | The priority of the Gotify message.                                                                                                       |
+| `default_title` | `(no subject)` | The default title of messages when a subject is not provided.                                                                             |
+| `allowed_senders` | empty | A list of allowed senders, either full addresses (`admin@example.com`) or domain only (`@example.com`). Leave empty to allow all senders. |
+| `prepend_sender` | false | Prepend sender information to the message for identification of sources                                                                   |
+
 Limitations
 -----------
 
-Currently, HTML messages aren't supported. Markdown might be possible, but currently not planned as most if not all messages include a text/plain variation.
+HTML-only mail is converted using [bluemonday](https://github.com/microcosm-cc/bluemonday) to strip HTML content. 
+If `text/plain` is supplied, it will still be prioritized above HTML.
 
-There is no authentication, besides allowing for specific names to be routed to. As such you should NOT run this as a public accessible SMTP server, and firewall it to what you need/put it behind a VPN. If Gotify supports authentication in the future, I'll add it and use the token to validate logins.
+Authentication is configurable per-user using the `password` option. Current authentication only allows for `PLAIN`, and 
+is transmitted in clear text as TLS is not supported. It is advised to only run this on a local network, or via a VPN.
 
 Examples
 --------
